@@ -4,8 +4,14 @@ Full-year Zmanim PDF for Pleasantville, NJ (2026)
 GRA / standard opinion — uses python-zmanim for all calendar and solar math
 """
 
+import argparse
 import datetime
 import calendar
+import json
+import os
+import re
+import urllib.parse
+import urllib.request
 from zoneinfo import ZoneInfo
 
 from zmanim.zmanim_calendar import ZmanimCalendar
@@ -82,9 +88,42 @@ def h(text):
         result.extend(reversed(gs_run) if is_rtl_run else gs_run)
     return ''.join(result)
 
-# ── Location & timezone ───────────────────────────────────────────────────────
-LOCATION = GeoLocation('Pleasantville, NJ', 39.3901, -74.5218, 'America/New_York', elevation=0)
-NJ_TZ    = ZoneInfo('America/New_York')
+# ── Geocoding ─────────────────────────────────────────────────────────────────
+_DEFAULT_CITY = "Pleasantville, NJ"
+_DEFAULT_LAT  = 39.3901
+_DEFAULT_LON  = -74.5218
+_DEFAULT_TZ   = "America/New_York"
+
+def geocode_city(city_name):
+    """Return (display_name, lat, lon) using OpenStreetMap Nominatim."""
+    params = urllib.parse.urlencode({'q': city_name, 'format': 'json', 'limit': 1})
+    url = f"https://nominatim.openstreetmap.org/search?{params}"
+    req = urllib.request.Request(url, headers={'User-Agent': 'zemanim-sheet/1.0'})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        results = json.loads(resp.read())
+    if not results:
+        raise SystemExit(f"Error: city not found: {city_name!r}")
+    r = results[0]
+    return r['display_name'], float(r['lat']), float(r['lon'])
+
+def get_timezone(lat, lon):
+    """Return IANA timezone string for coordinates using timezonefinder."""
+    try:
+        from timezonefinder import TimezoneFinder
+    except ImportError:
+        raise SystemExit("Error: run 'pip3 install timezonefinder' to look up timezones by city.")
+    tz = TimezoneFinder().timezone_at(lat=lat, lng=lon)
+    if tz is None:
+        raise SystemExit(f"Error: could not determine timezone for {lat:.4f}, {lon:.4f}")
+    return tz
+
+def city_slug(name):
+    """Convert city name to a filename-safe lowercase slug."""
+    return re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
+
+# ── Location & timezone (set in __main__, defaults to Pleasantville NJ) ───────
+LOCATION = GeoLocation(_DEFAULT_CITY, _DEFAULT_LAT, _DEFAULT_LON, _DEFAULT_TZ, elevation=0)
+NJ_TZ    = ZoneInfo(_DEFAULT_TZ)
 
 # ── Time formatting ───────────────────────────────────────────────────────────
 def fmt_time(t):
@@ -401,7 +440,7 @@ def _build_molad_table():
         table[shab_date] = (rc_heb, molad_str)
     return table
 
-MOLAD_TABLE = _build_molad_table()
+MOLAD_TABLE = {}  # populated in build_pdf after location is set
 
 # ── PDF colours & styles ──────────────────────────────────────────────────────
 HEADER_BG   = colors.HexColor("#1a3a5c")
@@ -575,7 +614,10 @@ def make_month_table(year, month):
     return t
 
 # ── PDF assembly ──────────────────────────────────────────────────────────────
-def build_pdf(output_path):
+def build_pdf(output_path, city_label=_DEFAULT_CITY, lat=_DEFAULT_LAT, lon=_DEFAULT_LON):
+    global MOLAD_TABLE
+    MOLAD_TABLE = _build_molad_table()
+
     doc = SimpleDocTemplate(
         output_path,
         pagesize=landscape(letter),
@@ -606,14 +648,14 @@ def build_pdf(output_path):
         month_num = month_idx + 1
 
         story.append(Paragraph(
-            h("זמנים") + f" — {month_name} 2026  |  Pleasantville, NJ",
+            h("זמנים") + f" — {month_name} 2026  |  {city_label}",
             heb_title_style
         ))
 
         story.append(Spacer(1, 4))
         
         story.append(Paragraph(
-            f"Lat: 39.39°N  •  Lon: 74.52°W  •  {h('שיטת הגר״א')}  •  "
+            f"Lat: {abs(lat):.2f}°{'N' if lat >= 0 else 'S'}  •  Lon: {abs(lon):.2f}°{'E' if lon >= 0 else 'W'}  •  {h('שיטת הגר״א')}  •  "
             f"Times are local EST/EDT  •  {h('תשפ״ו')} / {h('תשפ״ז')}",
             heb_sub_style
         ))
@@ -639,6 +681,26 @@ def build_pdf(output_path):
 
 
 if __name__ == '__main__':
-    import os
-    out = os.environ.get('ZMANIM_OUTPUT', './output/zmanim_pleasantville_2026_final.pdf')
-    build_pdf(out)
+    parser = argparse.ArgumentParser(description='Generate a full-year zmanim PDF.')
+    parser.add_argument('--city', default=None,
+                        help=f'City name to geocode (default: "{_DEFAULT_CITY}")')
+    args = parser.parse_args()
+
+    if args.city:
+        print(f'Geocoding "{args.city}"...')
+        display_name, lat, lon = geocode_city(args.city)
+        tz_name = get_timezone(lat, lon)
+        # Use a short label: everything before the first comma in display_name
+        city_label = display_name.split(',')[0].strip()
+        print(f"  → {city_label}  {lat:.4f}, {lon:.4f}  ({tz_name})")
+        LOCATION = GeoLocation(city_label, lat, lon, tz_name, elevation=0)
+        NJ_TZ    = ZoneInfo(tz_name)
+        slug = city_slug(args.city)
+    else:
+        city_label = _DEFAULT_CITY
+        lat, lon   = _DEFAULT_LAT, _DEFAULT_LON
+        slug       = city_slug(_DEFAULT_CITY)
+
+    os.makedirs('./output', exist_ok=True)
+    out = f"./output/zmanim_{slug}_2026.pdf"
+    build_pdf(out, city_label=city_label, lat=lat, lon=lon)
