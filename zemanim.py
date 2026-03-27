@@ -2,6 +2,9 @@
 """
 Full-year Zmanim PDF for Pleasantville, NJ (2026)
 GRA / standard opinion — uses python-zmanim for all calendar and solar math
+
+Copyright (c) 2026 Leonard Rosenthol
+SPDX-License-Identifier: MIT
 """
 
 import argparse
