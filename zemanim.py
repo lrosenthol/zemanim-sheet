@@ -38,11 +38,14 @@ from reportlab.pdfbase.ttfonts import TTFont
 # Latin/numeric columns use Source Sans 3; Hebrew cells use Noto Sans Hebrew
 pdfmetrics.registerFont(TTFont('SourceSans',     'fonts/SourceSans3-Regular.ttf'))
 pdfmetrics.registerFont(TTFont('SourceSansBold', 'fonts/SourceSans3-Bold.ttf'))
-pdfmetrics.registerFont(TTFont('FreeSans',       'fonts/NotoSansHebrew-Regular.ttf'))
-pdfmetrics.registerFont(TTFont('FreeSansBold',   'fonts/NotoSansHebrew-Bold.ttf'))
+pdfmetrics.registerFont(TTFont('FreeSans',       'fonts/Shlomo.ttf'))
+pdfmetrics.registerFont(TTFont('FreeSansBold',   'fonts/ShlomoBold.ttf'))
 
 # ── Hebrew bidi reordering (no external library needed) ───────────────────────
 import unicodedata as _ud
+
+# Paired characters that Unicode BiDi-mirrors when embedded in RTL text
+_BIDI_MIRROR = str.maketrans('()[]{}', ')(][}{')
 
 def _is_rtl(c):
     cp = ord(c)
@@ -67,6 +70,8 @@ def h(text):
     """Reorder Hebrew (RTL) string into visual LTR order for ReportLab."""
     if not text:
         return text
+    if '\n' in text:
+        return '\n'.join(h(line) for line in text.split('\n'))
     gs = _graphemes(text)
     if not any(_is_rtl(g[0]) for g in gs):
         return text
@@ -88,7 +93,17 @@ def h(text):
     runs.reverse()
     result = []
     for is_rtl_run, gs_run in runs:
-        result.extend(reversed(gs_run) if is_rtl_run else gs_run)
+        for g in (reversed(gs_run) if is_rtl_run else gs_run):
+            if is_rtl_run and len(g) > 1:
+                # Hebrew nikud glyphs are left-anchored in LTR rendering:
+                # emit combining marks before their base so both land at the
+                # same x-position and the marks overlay the letter correctly.
+                result.append(g[1:] + g[0])
+            elif not is_rtl_run:
+                # Mirror paired brackets embedded in RTL text (Unicode BiDi rule).
+                result.append(g.translate(_BIDI_MIRROR))
+            else:
+                result.append(g)
     return ''.join(result)
 
 # ── Geocoding ─────────────────────────────────────────────────────────────────
@@ -436,9 +451,10 @@ def _build_molad_table():
 
         rc_heb    = h(f"ר״ח {month_name}")
         dow_en    = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+        chalak    = (m_dt_nj.second * 18 + m_dt_nj.microsecond * 18 // 1_000_000) // 60
         molad_str = (
             h(f"מולד {month_name}") + ": " +
-            f"{dow_en[m_dt_nj.weekday()]} {m_dt_nj.hour}:{m_dt_nj.minute:02d} NJ"
+            f"{dow_en[m_dt_nj.weekday()]} {m_dt_nj.hour}:{m_dt_nj.minute:02d}+{chalak}ch NJ"
         )
         table[shab_date] = (rc_heb, molad_str)
     return table
@@ -470,7 +486,7 @@ def heb_para(text, fontsize=9, bold=False, color=colors.black, align=TA_RIGHT):
 def make_month_table(year, month):
     hdr_style = ParagraphStyle(
         'HdrHeb', fontName='FreeSans', fontSize=8.5,
-        textColor=colors.white, alignment=TA_CENTER, leading=8,
+        textColor=colors.white, alignment=TA_CENTER, leading=12,
     )
     def hdr(txt):
         return Paragraph(txt, hdr_style)
@@ -625,7 +641,7 @@ def build_pdf(output_path, city_label=_DEFAULT_CITY, lat=_DEFAULT_LAT, lon=_DEFA
         output_path,
         pagesize=landscape(letter),
         leftMargin=0.35*inch, rightMargin=0.35*inch,
-        topMargin=0.45*inch,  bottomMargin=0.4*inch,
+        topMargin=0.25*inch,  bottomMargin=0.25*inch,
     )
 
     title_style = ParagraphStyle(
